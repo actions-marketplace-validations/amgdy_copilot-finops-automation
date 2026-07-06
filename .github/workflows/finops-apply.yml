@@ -1,0 +1,54 @@
+name: FinOps — apply budgets
+
+# Apply Copilot AI-credit budgets from the v3 config.
+# Manual runs preview by default (dry-run); scheduled runs apply live.
+on:
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: v3 config file
+        required: false
+        default: config/copilot-finops.yml
+      dry_run:
+        description: Preview only, no writes (true/false)
+        required: false
+        default: "true"
+      log_level:
+        description: Live step log level (off, error, warn, info, debug)
+        type: choice
+        options:
+          - off
+          - error
+          - warn
+          - info
+          - debug
+        required: false
+        default: info
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finops-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Apply budgets
+        uses: ./
+        with:
+          operation: apply
+          config-file: ${{ github.event.inputs.config_file || 'config/copilot-finops.yml' }}
+          # Enterprise slug is environment identity, not config — from a repo/org Variable.
+          enterprise: ${{ vars.COPILOT_FINOPS_ENTERPRISE }}
+          # apply needs admin:enterprise; github.token cannot do enterprise billing.
+          token: ${{ secrets.COPILOT_FINOPS_TOKEN }}
+          # Scheduled runs go live; manual runs use the input (default dry-run).
+          dry-run: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
+          # The job summary always contains the full report; this controls live step logs.
+          log-level: ${{ github.event_name == 'schedule' && 'info' || github.event.inputs.log_level }}

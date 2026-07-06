@@ -1,125 +1,64 @@
 # Validation And Run Commands
 
-Always validate generated config before suggesting workflow execution.
+Always validate generated config before suggesting a run.
 
-## Schema And Versioning
-
-`scripts/validate-config.sh` validates the file in two layers: first against the versioned JSON
-Schema under `schemas/v<N>/`, then with semantic re-checks. For **v2** the schema covers structure,
-types, enums, typo protection, and the structural cross-field rules (per-scope required/forbidden
-fields, `enterprise`/`organization` mutual exclusivity, `credit_scope` -> `stop_at_limit`); for **v1** the
-schema is shape-only. The schema layer uses `check-jsonschema`; install it with
-`pipx install check-jsonschema` (or `pip install check-jsonschema`) for the full local check. If it
-is not installed the script warns and runs the bash re-checks only (so the structural rules are
-still enforced); the workflows install it so CI always enforces the schema.
-
-The config version is set by the top-level `version` field: **v2 requires `version: 2`** and is
-validated with type `all`; v1 omits it (defaults to `1`) and uses `budgets` / `teams`. Only use a
-version that has a matching `schemas/v<N>/` directory.
-
-## Validate Config
-
-v2 merged file (type `all`):
+## Validate (no token, no network)
 
 ```bash
-scripts/validate-config.sh config/copilot-finops.yml all
-scripts/validate-config.sh config/copilot-finops.local.yml all
+node bin/copilot-finops.js validate config/copilot-finops.yml
+node bin/copilot-finops.js validate config/copilot-finops.local.yml
 ```
 
-v1 split files:
+`validate` runs the semantic layer (`src/config/validate.js`) — version, unknown fields,
+scope/amount, per-scope required/forbidden fields, the `metered_credits_only` → `enforce` gating, and
+uniqueness — with the v3 JSON Schema (`schemas/v3/`) as a belt-and-suspenders gate. The field
+reference is `docs/config-schema.md`.
+
+## Dry-run locally (needs the enterprise slug + a token)
 
 ```bash
-scripts/validate-config.sh config/budget-policies.yml budgets
-scripts/validate-config.sh config/cost-center-members.yml teams
+node bin/copilot-finops.js apply config/copilot-finops.yml --enterprise your-enterprise
 ```
 
-## Dry-Run Locally
+This previews every CREATE / UPDATE / NO CHANGE (and any cost centers that would be created) without
+writing. The token comes from `COPILOT_FINOPS_TOKEN` (or `GITHUB_TOKEN`); a local `.env` in the
+working directory is loaded automatically. Add `--live` to actually write budgets.
 
-v2 merged file (apply and sync read the same file):
+## Workflows
 
-```bash
-scripts/apply-user-budgets.sh --config-file config/copilot-finops.yml --dry-run true
-scripts/sync-cost-center-members.sh --config-file config/copilot-finops.yml --dry-run true
-```
+- **`finops-validate.yml`** — runs `validate` on every pull request that touches the config, the
+  schema, or the action. Token-free. Fails the PR check on invalid config.
+- **`finops-apply.yml`** — runs `apply`. Manual runs default to `dry_run=true`; the weekly schedule
+  runs live. Inputs:
 
-The sync command above skips `team_cost_center_mappings` by default in favor of native enterprise-team
-assignment. Add `--force-user-sync true` only when intentionally dry-running the deprecated user-level
-bridge.
+  ```text
+  config_file: config file to apply (default config/copilot-finops.yml)
+  dry_run: true before a live apply
+  log_level: live step log level (off, error, warn, info, debug; default info)
+  ```
 
-v1 split files:
+  The enterprise slug comes from the `COPILOT_FINOPS_ENTERPRISE` variable and the token from the
+  `COPILOT_FINOPS_TOKEN` secret — neither is a config field or a workflow input.
 
-```bash
-scripts/apply-user-budgets.sh --config-file config/budget-policies.yml --dry-run true
-scripts/sync-cost-center-members.sh --config-file config/cost-center-members.yml --dry-run true
-```
+Always recommend running `finops-apply.yml` with `dry_run=true` (or the CLI without `--live`) and
+reviewing the summary before a live apply.
 
-## Workflow Inputs
+`log_level=info` is the default and prints apply progress plus the plain-text report. Use
+`log_level=warn` for quieter routine runs. Use `log_level=debug` only for detailed diagnostics; it
+adds budget resolution, live-budget matching, payload, request, retry, and pagination detail with
+sensitive fields redacted. `DEBUG` entries in the summary's full run log follow the same setting.
 
-For the **v2 merged file**, prefer the unified workflow `apply-copilot-finops.yml`: it resolves the
-config once, then applies budgets and syncs members in parallel (each with its own detailed summary).
+## Local config safety
 
-```text
-config_file: merged v2 config (default config/copilot-finops.yml)
-issue_number: testing only — resolve config from a Copilot FinOps config-request issue (label copilot-finops-config); do not use for production
-dry_run: true before live apply/sync
-force_user_sync: false by default; true runs the deprecated user-level member sync instead of default-skip
-```
-
-The unified workflow is file-based: the enterprise slug comes from the config, not an input. The
-per-type workflows below remain for running budgets/members/audit separately; they default to
-`config/copilot-finops.yml` and still accept a v1 split file via the legacy `*_config_file` input
-(deprecated). They are file-based only — issue-based testing goes through the unified workflow above.
-
-Budget apply workflow:
-
-```text
-config_file: optional unified config (e.g. config/copilot-finops.yml); overrides the legacy input
-budget_policies_config_file: config/budget-policies.yml (legacy v1 default)
-policy_name: optional single policy
-enterprise_slug: optional override
-dry_run: true before live apply
-```
-
-Cost center sync workflow:
-
-```text
-config_file: optional unified config (e.g. config/copilot-finops.yml); overrides the legacy input
-cost_center_members_config_file: config/cost-center-members.yml (legacy v1 default)
-mapping_name: optional single mapping
-enterprise_slug: optional override
-dry_run: true before live sync
-force_user_sync: false by default; true runs the deprecated user-level member sync instead of default-skip
-```
-
-Audit workflow:
-
-```text
-config_file: optional unified config (e.g. config/copilot-finops.yml); overrides the legacy inputs
-cost_center_members_config_file: config/cost-center-members.yml (legacy v1 default)
-budget_policies_config_file: config/budget-policies.yml (legacy v1 default)
-enterprise_slug: optional override
-force_user_sync: false by default; true reports the deprecated user-level member sync as globally forced
-```
-
-## Scheduled Workflows
-
-- `apply-copilot-finops.yml` (unified v2) runs daily at 04:37 UTC, resolves the merged file once, and applies budgets + syncs members in parallel (live).
-- `sync-cost-center-members.yml` runs daily at 03:17 UTC, uses file-based config, and forces `dry_run=false`.
-- `apply-user-budgets.yml` runs daily at 04:47 UTC after member sync, uses file-based config, and forces `dry_run=false`.
-- `audit-copilot-budget-state.yml` runs weekly on Monday at 12:23 UTC.
-
-## Local Config Safety
-
-Files matching `config/*.local.yml` are ignored by git. Use them when values are private, experimental, or specific to a local operator.
-
-Check ignore status:
+Files matching `config/*.local.yml` are gitignored. Use them for private, experimental, or
+operator-specific values. Check ignore status:
 
 ```bash
 git check-ignore -v config/copilot-finops.local.yml
-git check-ignore -v config/budget-policies.local.yml
-git check-ignore -v config/cost-center-members.local.yml
 ```
 
-## Public Repo Safety
+## Public repo safety
 
-Never put tokens in config. Do not commit private enterprise slugs, team names, cost center names, user logins, reports, or workflow logs to public branches unless explicitly approved.
+Never put tokens in config. Do not commit private enterprise slugs, team names, cost center names,
+user logins, reports, or workflow logs to public branches unless explicitly approved. The enterprise
+slug has no config field — keep it in the `COPILOT_FINOPS_ENTERPRISE` variable.

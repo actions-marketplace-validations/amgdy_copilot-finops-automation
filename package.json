@@ -1,0 +1,33 @@
+{
+  "name": "copilot-finops-automation",
+  "version": "3.0.0",
+  "description": "GitHub Action to apply GitHub Copilot AI-credit budgets from a versioned config (v3).",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "copilot-finops": "bin/copilot-finops.js"
+  },
+  "scripts": {
+    "build": "ncc build src/index.js -o dist --license licenses.txt",
+    "test": "node --test",
+    "validate": "node bin/copilot-finops.js validate",
+    "apply": "node bin/copilot-finops.js apply",
+    "migrate": "node bin/copilot-finops.js migrate",
+    "docs:schema": "node bin/gen-schema-docs.js"
+  },
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "js-yaml": "^5.2.1"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.44.1"
+  }
+}

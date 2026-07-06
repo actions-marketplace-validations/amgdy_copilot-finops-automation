@@ -1,63 +1,49 @@
 # Permissions
 
-Use a dedicated token in `COPILOT_FINOPS_TOKEN` for enterprise Copilot billing operations.
+Use a dedicated token in `COPILOT_FINOPS_TOKEN` for the `apply` operation. The `validate` operation needs no token and makes no API calls.
 
 ## Roles
 
-The GA Budget and usage management (enhanced billing) endpoints are accessible to:
+The Budget and usage management (enhanced billing) endpoints are accessible to:
 
 - **Enterprise owners**
 - **Billing managers**
-- **Organization owners** (organization-level and cost center budgets; cost center APIs)
 
-Creating, updating, and deleting enterprise budgets and cost centers requires an enterprise admin or billing manager. Deleting a budget or cost center requires an enterprise admin.
+Creating and updating enterprise budgets and cost centers requires an enterprise admin or billing manager.
 
-## Token scopes/permissions
+## Token scope
 
-For the full solution, create a dedicated classic PAT with the required scopes preselected:
+Create a dedicated classic PAT with `admin:enterprise`:
 
-[Create `COPILOT_FINOPS_TOKEN`](https://github.com/settings/tokens/new?description=Copilot%20FinOps%20Automation&scopes=admin%3Aenterprise,read%3Aenterprise,read%3Aorg)
+[Create `COPILOT_FINOPS_TOKEN`](https://github.com/settings/tokens/new?description=Copilot%20FinOps%20Automation&scopes=admin%3Aenterprise)
 
-The link preselects `admin:enterprise`, `read:enterprise`, and `read:org`. After creating the token, authorize it for SAML SSO if your enterprise or organization requires SSO authorization.
+After creating the token, authorize it for SAML SSO if your enterprise requires SSO authorization. Save it as the repository secret `COPILOT_FINOPS_TOKEN`.
 
-The token usually needs:
+Everything the `apply` operation does runs on the **enterprise** billing endpoints:
 
-- Enterprise billing management — required for the budgets and cost center APIs:
-  - `GET|POST|PATCH|DELETE /enterprises/{enterprise}/settings/billing/budgets...`
-  - `GET|POST|PATCH|DELETE /enterprises/{enterprise}/settings/billing/cost-centers...` (including `/resource`)
-- Organization read access for org team membership (`read:org`).
-- Enterprise read access for enterprise team membership (`read:enterprise` or "Enterprise teams" read).
+- `GET | POST | PATCH /enterprises/{enterprise}/settings/billing/budgets…` — list, create, and update budgets (every scope, including `organization`, is written here).
+- `GET | POST /enterprises/{enterprise}/settings/billing/cost-centers…` (including `/resource`) — list cost centers, and, for `team` budgets, create a cost center and assign the team to it.
 
-Use the least privilege that supports the workflows you enable:
+`admin:enterprise` covers all of these.
 
-| Workflow | Needs write access? | Main permissions |
+## Why team/organization membership scopes are not required
+
+Unlike a per-member sync model, v3 does **not** enumerate team or organization members. A `scope: team` budget is applied by assigning the **team itself** as a resource on a cost center, then placing a cost-center budget on it; a `scope: organization` budget is written **directly** on the enterprise endpoint. Either way GitHub expands the cap across the members. Because the engine never calls the team-membership or org-membership APIs, the token does **not** need `read:org` or enterprise-team read permission for budgets to work.
+
+## Least privilege by operation
+
+| Operation | Needs write? | Token |
 | --- | ---: | --- |
-| Audit | No | Read enterprise billing/cost centers, read org or enterprise team membership. |
-| Sync cost center members | Yes | Read team membership, read cost centers, add/remove cost center resources. |
-| Apply budgets | Yes | Read/list budgets, create/update budgets, and read/create cost centers for team budgets that cap metered usage only (`team` + `credit_scope: metered_only`). |
+| `validate` | No | none (no network) |
+| `apply` (dry-run) | No | `admin:enterprise` (reads budgets + cost centers to compute the drift) |
+| `apply` (live) | Yes | `admin:enterprise` (creates/updates budgets; creates/assigns a cost center for team budgets) |
 
-If you only use `enterprise` and `all_users` budget policies, the token does not need org team membership read access. If you use org or enterprise `team` policies, it does.
-
-If you do not use org teams anywhere in config, you can omit `read:org`. If you do use org teams, keep it.
-
-## Enterprise team tokens
-
-Enterprise teams (v1 `source.enterprise`; v2 a `team` with no `organization:`) use `/enterprises/{enterprise}/teams/{team_slug}/memberships`.
-This endpoint requires a classic PAT with `read:enterprise` scope, or a fine-grained token with
-the "Enterprise teams" read permission.
-
-## Organization budgets (v2 `scope: organization`)
-
-A `scope: organization` budget is written on the org billing endpoint
-(`/organizations/{org}/settings/billing/budgets`) and reads org membership from
-`/orgs/{org}/members`. The authenticated user must be an organization admin or billing manager for
-that org (a fine-grained token needs organization "Administration" write for create/update). The
-per-member track also reads `read:org` membership.
+The enterprise slug is supplied via the action's `enterprise` input (from the `COPILOT_FINOPS_ENTERPRISE` variable), not the token and not the config.
 
 ## Safety recommendations
 
 - Protect `config/**` and `.github/workflows/**` with required reviews and CODEOWNERS.
-- Keep manual mutating workflows defaulted to `dry_run=true`, and keep schedules disabled until reviewed file-based config is ready.
+- Keep manual `apply` runs defaulted to `dry_run=true`, and keep the schedule disabled until reviewed file-based config is ready.
 - Use branch protection on `main`.
 - Prefer a dedicated automation token that can be rotated without affecting a human's everyday account.
 - Rotate the token immediately if it ever appears in logs, reports, issues, commits, or screenshots.

@@ -4,32 +4,42 @@ Thanks for improving this project.
 
 ## Before opening a pull request
 
-- Do not include real enterprise slugs, team slugs, cost center names, user logins, generated reports, logs, JSONL summaries, or tokens.
-- Keep examples generic and use placeholder names such as `your-enterprise`, `your-org`, and `platform-engineering`.
-- Keep mutating workflows defaulted to `dry_run=true`.
-- Avoid behavior changes that create, update, or delete live billing objects without an explicit dry-run path.
-- When config, schema, workflow, issue-template, label, validation, or terminology requirements change, update `AGENTS.md` and `.github/skills/copilot-finops-config/` in the same pull request.
+- Do not include real enterprise slugs, team slugs, cost center names, user logins, generated reports, logs, or tokens.
+- Keep examples generic and use placeholder names such as `your-enterprise`, `acme`, and `platform-engineering`.
+- Keep `apply` defaulted to `dry_run=true` in workflows.
+- Avoid behavior changes that create, update, or delete live billing objects without a dry-run path.
+- When config, schema, workflow, validation, or terminology requirements change, update `AGENTS.md` and `.github/skills/copilot-finops-config/` in the same pull request.
 
 ## Validation
 
-Run the focused checks for the files you changed. For most changes, start with:
+Run the checks for what you changed. For most changes, start with:
 
 ```bash
-bash -n scripts/*.sh
-tests/run-schema-tests.sh
-scripts/validate-config.sh config/copilot-finops.example.yml all
-awk 'NR==1 {next} /^---$/ {exit} {print}' .github/skills/copilot-finops-config/SKILL.md | yq eval '.' >/dev/null
+npm test
+node bin/copilot-finops.js validate config/copilot-finops.yml
+node bin/copilot-finops.js validate config/copilot-finops.example.yml
 git diff --check
 ```
 
-Install `check-jsonschema` (`pipx install check-jsonschema`) so `validate-config.sh` also runs the JSON Schema layer locally and `tests/run-schema-tests.sh` can run; otherwise `validate-config.sh` warns and runs the semantic checks only.
+When you change a config field, constraint, enum, default, scope rule, or the schema, keep the whole chain consistent in the same change:
 
-When you change a config field, constraint, enum, default, policy type, the `version` field, or a `schemas/v<N>/` schema, extend the schema tests in the same change: append a valid case and an invalid case (with `expect_error`) to `tests/cases/v<N>/<schema>.yml`, and keep `tests/run-schema-tests.sh` green. See `## Schema Tests` in `AGENTS.md`.
+1. Update `schemas/v3/copilot-finops.schema.json`.
+2. Update the semantic layer in `src/config/validate.js` if the rule is cardinality/uniqueness/live (not pure shape) — see the schema ↔ validator boundary in `AGENTS.md`.
+3. Append a **valid** case and an **invalid** case to `tests/cases/v3/copilot-finops.yml` (the invalid case must assert on its error).
+4. Rebuild the bundle and regenerate the docs, and commit both:
 
-If available, also run:
+   ```bash
+   npm run build         # refresh dist/
+   npm run docs:schema   # refresh docs/config-schema.md
+   ```
+
+5. Keep `npm test` green.
+
+CI (`.github/workflows/ci.yml`) runs `npm test` and fails if the committed `dist/` or `docs/config-schema.md` is stale, so rebuild and regenerate before pushing.
+
+If available, also lint the workflows:
 
 ```bash
-shellcheck scripts/*.sh
 actionlint .github/workflows/*.yml
 ```
 
@@ -38,5 +48,5 @@ actionlint .github/workflows/*.yml
 In the pull request description, include:
 
 - What changed.
-- Whether it affects a read-only or mutating workflow.
+- Whether it affects `validate` (read-only) or `apply` (mutating).
 - What validation you ran.

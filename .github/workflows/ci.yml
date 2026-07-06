@@ -1,0 +1,41 @@
+name: CI
+
+# Build + test the Node action and keep the committed dist/ bundle honest.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Rebuild bundle
+        run: npm run build
+      - name: Ensure committed dist/ is up to date
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::dist/ is out of date. Run 'npm run build' and commit the result."
+            git --no-pager diff --stat -- dist
+            exit 1
+          fi
+      - name: Regenerate schema docs
+        run: npm run docs:schema
+      - name: Ensure docs/config-schema.md is up to date
+        run: |
+          if ! git diff --quiet -- docs/config-schema.md; then
+            echo "::error::docs/config-schema.md is stale. Run 'npm run docs:schema' and commit the result."
+            git --no-pager diff -- docs/config-schema.md
+            exit 1
+          fi

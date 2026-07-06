@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Keep the action's Node dependencies current. Every bump must rebuild the
+  # committed dist/ bundle (enforced by the "dist is up to date" CI check).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-runtime:
+        patterns:
+          - "@actions/*"
+      dev-tooling:
+        patterns:
+          - "@vercel/ncc"
+          - "ajv*"
+          - "js-yaml"
+
+  # Keep the GitHub Actions used by the repo's own workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

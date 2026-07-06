@@ -1,104 +1,155 @@
 # 💰 Copilot FinOps Automation
 
-Govern GitHub Copilot spend as code. Manage AI-credit budgets, cost centers, and team membership for your GitHub Enterprise from one version-controlled config file — validated before it runs, previewed as a dry run, and applied by GitHub Actions.
-
-> ⚠️ **Public repository:** this repo ships with placeholder values only. Keep real enterprise slugs, team names, cost center names, user logins, budget amounts, reports, logs, and tokens out of public branches — put them in a private fork or private repository.
+Govern GitHub Copilot spend as code. Apply AI-credit budgets for your GitHub Enterprise from one version-controlled config file — validated before it runs, previewed as a dry run, and applied by the reusable **Copilot FinOps v3** GitHub Action.
 
 ## ✨ Why use it
 
-- 📝 **Config as code** — budgets and cost center membership live in one reviewed YAML file, so every change ships through a pull request with full history.
-- 🛡️ **Safe by default** — manual runs preview as a dry run, and config is validated against a JSON Schema before any API call reaches your enterprise.
-- 🔄 **Stays in sync** — scheduled workflows reconcile live budgets and cost center membership with your config, idempotently.
-- 👀 **Clear visibility** — an audit workflow reports your config against current GitHub state as markdown, and every run writes a detailed job summary.
-- 🔌 **Built on GitHub's GA billing APIs** — uses the Budget and usage management (enhanced billing) endpoints.
-
-## 🆕 What's new in v2
-
-v2 makes config simpler to author and safer to ship:
-
-- 📦 **One merged config file.** `config/copilot-finops.yml` replaces the two v1 split files. It holds budgets (`ai_credit_spend_policies`) and team → cost center syncs (`team_cost_center_mappings`); both lists are optional, so you write only what you need.
-- ✅ **Schema-validated config.** The config you author is checked against a versioned JSON Schema (`schemas/v2/`) for structure, types, allowed values, and per-scope rules — live in your editor with the Red Hat **YAML** extension, and again in CI, before any budget is created. Run the same check yourself with `scripts/validate-config.sh config/copilot-finops.yml all`.
-- 🤖 **AI-assisted authoring.** The included [Copilot FinOps skill](.github/skills/copilot-finops-config/SKILL.md) helps you write and validate config interactively: describe the budgets and team mappings you want, and Copilot produces a valid file grounded in the schema.
-
-v1's split files (`config/budget-policies.yml`, `config/cost-center-members.yml`) are frozen but still supported. Convert an existing pair with `scripts/migrate-v1-to-v2.sh`. See [docs/setup.md](docs/setup.md) and [schemas/README.md](schemas/README.md).
-
-## 💳 How Copilot AI-credit billing works
-
-Copilot usage is metered in **AI credits**. Every license includes an allotment of AI credits pooled across the enterprise: while the pool has credits, requests are served from it at no extra cost, and once it is exhausted, additional usage is metered per AI credit and capped by the budgets you set. Code completions and next edit suggestions are included in every plan and don't consume AI credits.
-
-Four budget controls work together, each governing a layer of spend:
-
-| Control | What it governs |
-| --- | --- |
-| All-users default budget | Each licensed user's total AI-credit usage (pool + metered) |
-| Individual user budget | A specific user's total usage (overrides the all-users default) |
-| Cost center budget | A cost center's metered usage after the pool is exhausted |
-| Enterprise budget | The enterprise's total metered usage after the pool is exhausted |
-
-For the full level tree and billing-flow diagrams, see [docs/workflows.md](docs/workflows.md).
+- 📝 **Config as code** — every AI-credit budget lives in one reviewed YAML file, so each change ships through a pull request with full history.
+- 🛡️ **Safe by default** — the `apply` operation previews as a dry run (that preview *is* the audit), and config is validated against a JSON Schema before any API call reaches your enterprise.
+- 🔄 **Idempotent apply** — a scheduled workflow applies desired budget state from your config: it creates and updates, and never deletes.
+- 🔒 **Secrets stay out of config** — the enterprise slug is an action input (a repo/org Variable), never a tracked config field.
+- 🔌 **Reusable v3 action** — load `amgdy/copilot-finops-automation@v3` from any enterprise config repo. No need to fork this whole repo just to run the engine.
+- ⚙️ **Zero install** — a self-contained Node.js action (`node24`, committed `dist/`). No `gh`/`jq`/`yq`/`pipx` on the runner.
 
 ## ⚙️ How it works
 
-Three operations, each a GitHub Actions workflow you can run manually or on a schedule:
+The project ships as a **Node.js GitHub Action** with two operations:
 
-| Operation | Workflow | What it does |
+| Operation | What it does | Token |
 | --- | --- | --- |
-| 🔍 **Audit** | `audit-copilot-budget-state.yml` | Compares your config to live GitHub state and writes a markdown report. |
-| 💵 **Apply budgets** | `apply-user-budgets.yml` | Creates or updates AI-credit budgets to match your config (idempotent; never deletes). |
-| 👥 **Sync members** | `sync-cost-center-members.yml` | Bridges cost center membership from current team membership. Skips every mapping by default in favor of [native enterprise-team assignment](https://github.blog/changelog/2026-06-25-assign-enterprise-teams-to-cost-centers/); set `force_user_sync` to run the legacy user-level sync. |
-| 🚀 **Apply both (v2)** | `apply-copilot-finops.yml` | Validates the merged config once, then applies budgets and syncs members in parallel. |
+| `validate` | Lints the config against the v3 JSON Schema and the semantic rules. No network. | none |
+| `apply` | Applies AI-credit budgets to match config. `dry-run` (default) previews the drift; live mode writes. | `admin:enterprise` |
 
-Manual runs start in `dry_run=true` and print exactly what would change. Scheduled runs reconcile reviewed file-based config live. See [docs/workflows.md](docs/workflows.md) for triggers, inputs, and diagrams.
+Two workflows wire those operations up:
 
-## 🚀 Quick start
+| Workflow | Trigger | Operation |
+| --- | --- | --- |
+| [`finops-validate.yml`](.github/workflows/finops-validate.yml) | Pull requests that touch config/schema/action | `validate` (token-free) |
+| [`finops-apply.yml`](.github/workflows/finops-apply.yml) | Manual (dry-run by default) + weekly schedule (live) | `apply` |
 
-1. 📥 **Use this repository** as a template, or fork it into a **private** repository for real config.
-2. 🔑 **Create a token** with the scopes in [docs/permissions.md](docs/permissions.md) and save it as the repository secret `COPILOT_FINOPS_TOKEN`. ([Create the PAT](https://github.com/settings/tokens/new?description=Copilot%20FinOps%20Automation&scopes=admin%3Aenterprise,read%3Aenterprise,read%3Aorg).)
-3. 📝 **Create your config** from the worked example:
+Budgets that target a **team** are applied through a cost center: the action finds the cost center that groups the team, or creates one and assigns the team to it. An **organization** budget is written directly (a collective metered cap). It never enumerates individual members — GitHub expands the cap across the members for you.
+
+See [docs/workflows.md](docs/workflows.md) for triggers, inputs, and the reconciliation and billing-flow diagrams.
+
+## 💳 How Copilot AI-credit billing works
+
+Copilot usage is metered in **AI credits**. Every license includes an allotment of AI credits pooled across the enterprise: while the pool has credits, requests are served from it at no extra cost; once it is exhausted, additional usage is metered per AI credit and capped by the budgets you set. Code completions and next edit suggestions are included in every plan and don't consume AI credits.
+
+Budgets work together, each governing a layer of spend:
+
+| Budget scope | What it governs |
+| --- | --- |
+| `all_users` | Each licensed user's total AI-credit usage (pool + metered) |
+| `user` | Specific users' total usage (overrides the all-users default) |
+| `cost_center` | A cost center — per-member pool+metered, or the cost center's collective metered spend |
+| `team` | A team, applied through its cost center (per-member, or collective metered) |
+| `organization` | An org — a direct collective metered cap after the pool |
+| `enterprise` | The enterprise's total metered usage after the pool |
+
+For the full level tree and billing-flow diagrams, see [docs/workflows.md](docs/workflows.md).
+
+## 🚀 Use The Hosted v3 Action
+
+The simplest way to use this solution is to keep only your **config** and **workflows** in your enterprise repository, and load the reusable action from:
+
+```yaml
+uses: amgdy/copilot-finops-automation@v3
+```
+
+This is simpler than the older model where every enterprise had to fork the whole automation repo. The FinOps engine now lives in one reusable action, and each consuming repo only owns its reviewed config, secret, variable, and schedule.
+
+In your enterprise config repo, add `config/copilot-finops.yml`:
+
+```yaml
+version: 3
+budgets:
+  - name: all-users-default
+    scope: all_users
+    amount: 30
+```
+
+Add a token secret and enterprise variable:
+
+```text
+COPILOT_FINOPS_TOKEN       # classic PAT with admin:enterprise
+COPILOT_FINOPS_ENTERPRISE  # enterprise slug, for example your-enterprise
+```
+
+Then add two workflows to your enterprise repo — one that runs `validate` on pull requests, and one that runs `apply` on a schedule. Copy the ready-made **validate** and **apply** workflows from [docs/workflows.md](docs/workflows.md#reusable-v3-action); they preview by default (dry-run) and apply live only on the schedule.
+
+Keep the schedule disabled, or keep `config/copilot-finops.yml` as a no-op (`version: 3`), until you are ready.
+
+## 🚀 Quick start for this repo
+
+1. 📥 **Use the hosted v3 action** from `amgdy/copilot-finops-automation@v3` in your enterprise config repo. Fork this repository only if you want to develop the engine itself.
+2. 🔑 **Create a token** with `admin:enterprise` (see [docs/permissions.md](docs/permissions.md)) and save it as the repository secret `COPILOT_FINOPS_TOKEN`. ([Create the PAT](https://github.com/settings/tokens/new?description=Copilot%20FinOps%20Automation&scopes=admin%3Aenterprise).)
+3. 🏷️ **Set your enterprise slug** as the repository (or org) **Variable** `COPILOT_FINOPS_ENTERPRISE`. It is deliberately *not* a config field.
+4. 📝 **Author your config** from the worked example:
 
    ```bash
    cp config/copilot-finops.example.yml config/copilot-finops.yml
    ```
 
-   Set `enterprise_slug`, then add the budgets and team mappings you need. Let Copilot help — open the file and ask it to author config, guided by the [Copilot FinOps skill](.github/skills/copilot-finops-config/SKILL.md).
-4. ✅ **Validate** before you run anything:
+   Keep only the budgets you need. Let Copilot help — open the file and ask it to author config, guided by the [Copilot FinOps skill](.github/skills/copilot-finops-config/SKILL.md).
+5. ✅ **Validate** before you run anything (no token needed):
 
    ```bash
-   scripts/validate-config.sh config/copilot-finops.yml all
+   node bin/copilot-finops.js validate config/copilot-finops.yml
    ```
 
-   Install `check-jsonschema` (`pipx install check-jsonschema`) for the full schema check, and add the Red Hat **YAML** extension for live validation as you edit.
-5. 👀 **Preview, then apply.** Run the audit workflow, then run apply manually with `dry_run=true` and review the job summary. Switch to `dry_run=false` — or enable the schedules — only once the preview looks right.
+   Add the Red Hat **YAML** extension for live validation, autocomplete, and hover docs as you edit.
+6. 👀 **Preview, then apply.** Run `finops-apply.yml` manually with `dry_run=true` and review the job summary (the dry-run *is* the audit). `log_level=info` is the default; use `log_level=debug` when you need budget-resolution, matching, payload, request, retry, or pagination detail. Switch to `dry_run=false` — or enable the schedule — only once the preview looks right.
 
 The smallest valid config is a safe no-op:
 
 ```yaml
-version: 2
-enterprise_slug: your-enterprise
+version: 3
 ```
 
-Add `ai_credit_spend_policies` to set budgets and `team_cost_center_mappings` to sync members. The worked example in [`config/copilot-finops.example.yml`](config/copilot-finops.example.yml) covers every scope; the [Copilot FinOps skill](.github/skills/copilot-finops-config/SKILL.md) and [schemas/README.md](schemas/README.md) are the authoritative field-by-field reference.
+Add `budgets:` to set caps. The worked example in [`config/copilot-finops.example.yml`](config/copilot-finops.example.yml) covers every scope; [`docs/config-schema.md`](docs/config-schema.md) is the authoritative field-by-field reference.
 
-## 📋 Requirements
+## 🖥️ Local CLI
 
-- A GitHub repository with Actions enabled and the `COPILOT_FINOPS_TOKEN` secret set.
-- For local validation and runs: `gh`, `jq`, `yq`, Bash 4+, and optionally `check-jsonschema`. (GitHub-hosted runners already include these; the workflows install `check-jsonschema` for you.)
+The same engine runs from the command line via [`bin/copilot-finops.js`](bin/copilot-finops.js) (Node.js 24+):
+
+```bash
+npm install                                              # dev/test deps
+
+node bin/copilot-finops.js validate config/copilot-finops.yml   # lint (no token)
+node bin/copilot-finops.js apply    config/copilot-finops.yml \
+  --enterprise your-enterprise                           # dry-run preview
+node bin/copilot-finops.js apply    config/copilot-finops.yml \
+  --enterprise your-enterprise --live                    # write budgets
+```
+
+`apply` reads the token from `COPILOT_FINOPS_TOKEN` (or `GITHUB_TOKEN`) and the enterprise from `--enterprise` or `COPILOT_FINOPS_ENTERPRISE`. A local `.env` in the working directory is loaded automatically. Migrate a legacy v2 file with `node bin/copilot-finops.js migrate <v2-in> <v3-out>`.
+
+## 🧪 Development
+
+```bash
+npm test                 # node:test suite
+npm run build            # bundle src/ -> dist/ with @vercel/ncc (commit dist/)
+npm run docs:schema      # regenerate docs/config-schema.md (commit it)
+```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the tests and fails if the committed `dist/` or `docs/config-schema.md` is stale.
 
 ## 📚 Documentation
 
 | Doc | Contents |
 | --- | --- |
-| [docs/setup.md](docs/setup.md) | Token, prerequisites, configuring files, naming conventions. |
-| [docs/workflows.md](docs/workflows.md) | Workflow triggers, inputs, and billing-flow and reconciliation diagrams. |
+| [docs/setup.md](docs/setup.md) | Token, enterprise variable, prerequisites, authoring config, naming conventions. |
+| [docs/workflows.md](docs/workflows.md) | Workflow triggers, inputs, and the reconciliation and billing-flow diagrams. |
+| [docs/config-schema.md](docs/config-schema.md) | Generated field-by-field config reference. |
 | [docs/permissions.md](docs/permissions.md) | Token scopes per operation. |
-| [docs/api-reference.md](docs/api-reference.md) | The exact GA billing API calls and request bodies. |
+| [docs/api-reference.md](docs/api-reference.md) | The exact billing API calls and request bodies. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common validation, permission, and API errors. |
 | [docs/public-release.md](docs/public-release.md) | Checklist before publishing a fork or template. |
-| [schemas/README.md](schemas/README.md) | Config field reference, schema validation, and the v1 ↔ v2 map. |
+| [schemas/README.md](schemas/README.md) | The schema, its editor/CI role, and the schema ↔ validator boundary. |
 | [Copilot FinOps skill](.github/skills/copilot-finops-config/SKILL.md) | The Copilot skill that authors and validates config. |
 
 ## 🔒 Safety
 
-- 🧪 Manual mutating runs default to `dry_run=true`; keep schedules disabled until your config and token are ready.
+- 🧪 Manual `apply` runs default to `dry_run=true`; keep the schedule disabled until your config and token are ready.
 - 👮 Protect `.github/workflows/**` and `config/**` with CODEOWNERS and required reviews on `main`.
 - 🔐 Use a private repository for live enterprise configuration, and review [docs/public-release.md](docs/public-release.md) before making any copy public.

@@ -1,0 +1,281 @@
+# Behavior cases for the v3 config validator (src/config/validate.js).
+#
+# Unlike the v1/v2 manifests (which tested the JSON Schema in isolation), these
+# cases run against validateConfig() — the full validator: JSON Schema gate
+# (schemas/v3) PLUS the semantic layer (version, per-scope required/forbidden
+# fields, the metered_credits_only -> enforce gating, and uniqueness). This is
+# why uniqueness cases (which the schema deliberately does NOT enforce) live
+# here. The schema-only boundary (schema alone accepts "two all_users") is
+# asserted separately in tests/schema.test.js.
+#
+# Case fields:
+#   name         - unique label
+#   valid        - true: validateConfig must accept; false: must reject
+#   expect_error - (invalid only) substring that must appear in some error
+#   config       - the document to validate
+#
+# When you change a field/constraint/scope rule, append a valid AND an invalid
+# case here and keep `npm test` green (see AGENTS.md "Schema Tests").
+cases:
+  # ── valid ────────────────────────────────────────────────────────────────
+  - name: all_users-minimal
+    valid: true
+    config: { version: 3, budgets: [{ scope: all_users, amount: 30 }] }
+
+  - name: empty-budgets
+    valid: true
+    config: { version: 3, budgets: [] }
+
+  - name: no-budgets
+    valid: true
+    config: { version: 3 }
+
+  - name: user-multi
+    valid: true
+    config: { version: 3, budgets: [{ scope: user, users: [alice, bob], amount: 75 }] }
+
+  - name: cost_center-per-user-default
+    valid: true
+    config: { version: 3, budgets: [{ scope: cost_center, cost_center: engineering, amount: 20 }] }
+
+  - name: cost_center-metered-cap
+    valid: true
+    config:
+      version: 3
+      budgets:
+        - scope: cost_center
+          cost_center: engineering
+          metered_credits_only: true
+          amount: 500
+          enforce: false
+          alerts: [eng-billing-admin]
+
+  - name: team-per-user-default
+    valid: true
+    config: { version: 3, budgets: [{ scope: team, team: platform-engineering, amount: 25 }] }
+
+  - name: team-metered-allow-shared
+    valid: true
+    config:
+      version: 3
+      budgets:
+        - scope: team
+          team: platform-engineering
+          metered_credits_only: true
+          amount: 300
+          enforce: false
+          allow_shared_cost_center: true
+
+  - name: org-direct-metered
+    valid: true
+    config:
+      version: 3
+      budgets:
+        - scope: organization
+          organization: acme
+          metered_credits_only: true
+          amount: 4000
+          enforce: false
+
+  - name: org-hard-stop-default
+    valid: true
+    config:
+      version: 3
+      budgets:
+        - scope: organization
+          organization: acme
+          amount: 4000
+
+  - name: enterprise-enforce
+    valid: true
+    config: { version: 3, budgets: [{ scope: enterprise, amount: 5000, enforce: false, alerts: [billing-admin] }] }
+
+  - name: same-cost-center-pool-and-metered
+    valid: true
+    config:
+      version: 3
+      budgets:
+        - scope: cost_center
+          cost_center: engineering
+          amount: 20
+        - scope: cost_center
+          cost_center: engineering
+          metered_credits_only: true
+          amount: 500
+          enforce: false
+
+  - name: all-six-scopes-together
+    valid: true
+    config:
+      version: 3
+      budgets:
+        - { name: base, scope: all_users, amount: 30 }
+        - { name: power, scope: user, users: [alice], amount: 75 }
+        - { name: eng, scope: cost_center, cost_center: engineering, metered_credits_only: true, amount: 500, enforce: false }
+        - { name: platform, scope: team, team: platform-engineering, amount: 25 }
+        - { name: org, scope: organization, organization: acme, amount: 4000, enforce: false }
+        - { name: ent, scope: enterprise, amount: 5000, enforce: false }
+
+  # ── invalid: version ──────────────────────────────────────────────────────
+  - name: version-2-rejected
+    valid: false
+    expect_error: "only supports version 3"
+    config: { version: 2, budgets: [] }
+
+  - name: missing-version
+    valid: false
+    expect_error: "only supports version"
+    config: { budgets: [] }
+
+  # ── invalid: scope / amount ───────────────────────────────────────────────
+  - name: missing-scope
+    valid: false
+    expect_error: 'missing "scope"'
+    config: { version: 3, budgets: [{ amount: 5 }] }
+
+  - name: missing-amount
+    valid: false
+    expect_error: 'missing "amount"'
+    config: { version: 3, budgets: [{ scope: all_users }] }
+
+  - name: bad-scope-enum
+    valid: false
+    expect_error: "invalid scope"
+    config: { version: 3, budgets: [{ scope: nope, amount: 5 }] }
+
+  - name: negative-amount
+    valid: false
+    expect_error: "whole number of USD"
+    config: { version: 3, budgets: [{ scope: all_users, amount: -5 }] }
+
+  - name: amount-as-string
+    valid: false
+    expect_error: "whole number of USD"
+    config: { version: 3, budgets: [{ scope: all_users, amount: "30" }] }
+
+  # ── invalid: identity fields ──────────────────────────────────────────────
+  - name: user-missing-users
+    valid: false
+    expect_error: 'requires "users"'
+    config: { version: 3, budgets: [{ scope: user, amount: 5 }] }
+
+  - name: all_users-with-users
+    valid: false
+    expect_error: 'not allowed for scope "all_users"'
+    config: { version: 3, budgets: [{ scope: all_users, amount: 5, users: [x] }] }
+
+  - name: team-with-cost_center
+    valid: false
+    expect_error: 'not allowed for scope "team"'
+    config: { version: 3, budgets: [{ scope: team, team: p, cost_center: c, amount: 5 }] }
+
+  - name: cost_center-missing-cost_center
+    valid: false
+    expect_error: 'requires "cost_center"'
+    config: { version: 3, budgets: [{ scope: cost_center, amount: 5 }] }
+
+  - name: users-duplicate-logins
+    valid: false
+    expect_error: "duplicate logins"
+    config: { version: 3, budgets: [{ scope: user, users: [a, a], amount: 5 }] }
+
+  # ── invalid: metered_credits_only gating ──────────────────────────────────
+  - name: metered-forbidden-on-all_users
+    valid: false
+    expect_error: "only cost_center, team"
+    config: { version: 3, budgets: [{ scope: all_users, amount: 5, metered_credits_only: true }] }
+
+  - name: metered-forbidden-on-enterprise
+    valid: false
+    expect_error: "only cost_center, team"
+    config: { version: 3, budgets: [{ scope: enterprise, amount: 5, metered_credits_only: true }] }
+
+  - name: org-metered-false-not-yet-supported
+    valid: false
+    expect_error: "not yet supported"
+    config: { version: 3, budgets: [{ scope: organization, organization: acme, amount: 5, metered_credits_only: false }] }
+
+  # ── invalid: enforce gating ───────────────────────────────────────────────
+  - name: enforce-forbidden-on-cost_center-default
+    valid: false
+    expect_error: "collective metered budgets"
+    config: { version: 3, budgets: [{ scope: cost_center, cost_center: e, amount: 5, enforce: false }] }
+
+  - name: enforce-forbidden-on-team-default
+    valid: false
+    expect_error: "collective metered budgets"
+    config: { version: 3, budgets: [{ scope: team, team: p, amount: 5, enforce: false }] }
+
+  - name: enforce-forbidden-on-user
+    valid: false
+    expect_error: "collective metered budgets"
+    config: { version: 3, budgets: [{ scope: user, users: [x], amount: 5, enforce: true }] }
+
+  # ── invalid: allow_shared_cost_center gating ──────────────────────────────
+  - name: allow-shared-forbidden-on-cost_center
+    valid: false
+    expect_error: "only allowed for scope: team"
+    config: { version: 3, budgets: [{ scope: cost_center, cost_center: e, amount: 5, allow_shared_cost_center: true }] }
+
+  - name: allow-shared-forbidden-on-enterprise
+    valid: false
+    expect_error: "only allowed for scope: team"
+    config: { version: 3, budgets: [{ scope: enterprise, amount: 5, allow_shared_cost_center: true }] }
+
+  - name: allow-shared-forbidden-on-organization
+    valid: false
+    expect_error: "only allowed for scope: team"
+    config: { version: 3, budgets: [{ scope: organization, organization: acme, amount: 5, allow_shared_cost_center: true }] }
+
+  # ── invalid: typos / unknown fields ───────────────────────────────────────
+  - name: unknown-budget-field
+    valid: false
+    expect_error: 'unknown field "foo"'
+    config: { version: 3, budgets: [{ scope: all_users, amount: 5, foo: 1 }] }
+
+  - name: unknown-top-level-field
+    valid: false
+    expect_error: "unknown top-level field"
+    config: { version: 3, extra: 1, budgets: [] }
+
+  - name: budgets-not-a-list
+    valid: false
+    expect_error: "budgets must be a list"
+    config: { version: 3, budgets: "nope" }
+
+  # ── invalid: uniqueness (rule 5 — semantic only, NOT in the schema) ────────
+  - name: two-all_users
+    valid: false
+    expect_error: "at most one all_users"
+    config:
+      version: 3
+      budgets:
+        - { scope: all_users, amount: 30 }
+        - { scope: all_users, amount: 40 }
+
+  - name: two-enterprise
+    valid: false
+    expect_error: "at most one enterprise"
+    config:
+      version: 3
+      budgets:
+        - { scope: enterprise, amount: 100 }
+        - { scope: enterprise, amount: 200 }
+
+  - name: duplicate-cost_center-same-metered
+    valid: false
+    expect_error: "duplicate cost_center budget"
+    config:
+      version: 3
+      budgets:
+        - { scope: cost_center, cost_center: eng, amount: 20 }
+        - { scope: cost_center, cost_center: eng, amount: 25 }
+
+  - name: duplicate-organization
+    valid: false
+    expect_error: "duplicate organization budget"
+    config:
+      version: 3
+      budgets:
+        - { scope: organization, organization: acme, amount: 100 }
+        - { scope: organization, organization: acme, amount: 200 }

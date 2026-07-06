@@ -1,0 +1,36 @@
+name: FinOps — validate config
+
+# Lint the v3 Copilot FinOps config on every PR that touches it (token-free).
+on:
+  pull_request:
+    paths:
+      - "config/**"
+      - "schemas/v3/**"
+      - "src/**"
+      - "dist/**"
+      - "action.yml"
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: v3 config file to validate
+        required: false
+        default: config/copilot-finops.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate config
+        uses: ./
+        with:
+          operation: validate
+          config-file: ${{ github.event.inputs.config_file || 'config/copilot-finops.yml' }}
+      - name: Validate worked example
+        uses: ./
+        with:
+          operation: validate
+          config-file: config/copilot-finops.example.yml

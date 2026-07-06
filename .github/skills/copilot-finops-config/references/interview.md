@@ -1,107 +1,62 @@
 # Interview Checklist
 
-Use this checklist to gather only the missing information. Do not ask everything if the user already provided enough context.
+Gather only the missing information. Do not ask everything if the user already gave enough context.
 
-## First Questions
+## First questions
 
-Ask these first:
+1. What budgets do you want? (any of: all-users default, specific users, a cost center, a team, an organization, an enterprise cap)
+2. Should this go in a tracked file (`config/copilot-finops.yml`) or a private local file (`config/copilot-finops.local.yml`)?
+3. Are the team slugs, org logins, cost center names, user logins, and amounts safe to commit?
 
-1. What output do you want?
-   - budget policies config
-   - cost center member sync config
-   - both
-   - YAML for an issue-form request
-2. Is this for a public repo config, private repo config, or ignored local config?
-3. What is the GitHub Enterprise slug?
-4. Should this be a reviewed production config file or a test/request config?
+> The enterprise slug is **not** a config field — it is set once as the `COPILOT_FINOPS_ENTERPRISE`
+> repository/org variable (and passed to the action's `enterprise` input). Do not ask for it as
+> config; if the user is setting up the repo, remind them to set that variable and the
+> `COPILOT_FINOPS_TOKEN` secret.
 
-## Budget Policy Questions
+## Per-scope questions
 
-Ask when generating `ai_credit_spend_policies`.
+Ask only for the scopes the user wants.
 
-General:
+**All-users default (`scope: all_users`)** — optional, at most one:
 
-> Any non-empty budget set must include exactly one all-users default (required). An enterprise cap is optional but limited to one. If the user wants budgets at all, always generate the all-users default, plus whatever else they ask for.
+- Amount in whole USD. (Always hard-stop; no `enforce`.)
 
-- An all-users default user budget is **required** when defining budgets (exactly one). Confirm its amount.
-- An enterprise metered-spend cap is **optional** (at most one). Offer it and confirm its amount if wanted.
-- Do you want to budget one or more specific users (`scope: user`)? If yes, which logins and amount?
-- Do you want one or more cost center metered-spend caps?
-- Do you want team-based budgets?
-- Do you need alerts? If yes, which GitHub logins should receive alerts?
+**Individual users (`scope: user`)**:
 
-All-users budget:
+- Which logins (`users:`, one or more)?
+- Amount in whole USD (applied to each login). (Always hard-stop.)
 
-- Amount in whole USD.
-- Confirm the budget hard-stops (`stop_at_limit` omitted or `true`) because user-level budgets always hard-stop.
+**Cost center (`scope: cost_center`)**:
 
-User budget (`scope: user`):
+- The name of an **existing** cost center. (If it should be auto-created, use a team budget instead.)
+- Per-member cap (default) or the cost center's collective metered cap (`metered_credits_only: true`)?
+- If collective metered: hard-stop (`enforce: true`, default) or alert-only (`enforce: false`)?
+- Amount in whole USD. Alert recipients, if any (`alerts:`).
 
-- The GitHub login(s) to budget (`users:` — one or more).
-- Amount in whole USD (applied to each listed login).
-- Always hard-stops (user-level budgets cannot alert-only).
+**Team (`scope: team`)**:
 
-Enterprise budget:
-
-- Amount in whole USD.
-- Should it hard-stop at the cap (`stop_at_limit: true`, the default) or alert-only (`stop_at_limit: false`)?
-- Alert recipients, if any (`alert_admins`).
-
-Cost center budget:
-
-- Cost center display name.
-- Amount in whole USD.
-- Hard-stop or alert-only.
-- Alert recipients, if any.
-
-Team budget:
-
-- Is the source an org team or enterprise team? (org team -> set `organization:`; enterprise team -> omit it, the enterprise is inferred.)
-- Org login, if org team.
-- Enterprise slug, if enterprise team and different from top-level.
-- Bare team slug(s) (`teams:` — one or more; the policy is applied to each).
-- Which credit scope?
-  - `pool_then_metered`: per-member user budgets (members unioned + deduped across the listed teams); covers shared pool + metered usage; always hard-stop.
-  - `metered_only`: one cost center budget per listed team; covers collective metered usage after the shared pool; hard-stop optional.
-- For `metered_only`, ask whether to use an existing `cost_center:` (single team only) or let the script derive/create one per team, and whether to prune members who left the team (`remove_extra_members`).
+- Enterprise team identifier (`team:`): prefer the bare slug, but display name and `ent:<slug>` also resolve at apply time.
+- Per-member cap (default) or the team's collective metered cap (`metered_credits_only: true`)?
+- If collective metered: hard-stop or alert-only? Is it OK to budget the cost center even if it holds other resources (`allow_shared_cost_center: true`)?
 - Amount in whole USD.
 
-Organization budget:
+**Organization (`scope: organization`)** — a direct collective metered cap (`metered_credits_only: true`, or omit it):
 
-- Which organization login (`organization:`)?
-- Which credit scope?
-  - `pool_then_metered`: one user budget per org member; always hard-stop.
-  - `metered_only`: one org-scope budget for the org's collective metered usage; hard-stop optional.
+- Org login (`organization:`).
 - Amount in whole USD.
-- Note: if org members also receive a team total-spend budget, the last policy in the file wins for any shared login (flagged in the summary).
+- Hard-stop (`enforce: true`, default) or alert-only (`enforce: false`)?
+- (The per-member org path — `metered_credits_only: false` — is not yet supported; to cap specific org users per-member, put them in an enterprise team and budget it with scope: team.)
 
-## Cost Center Member Sync Questions
+**Enterprise cap (`scope: enterprise`)** — optional, at most one:
 
-Ask when generating `team_cost_center_mappings`.
+- Amount in whole USD.
+- Hard-stop (`enforce: true`, default) or alert-only (`enforce: false`)?
+- Alert recipients, if any (`alerts:`).
 
-First confirm the approach, because user-level sync is now opt-in:
-
-- Can the enterprise team be assigned to the cost center **natively** ([changelog](https://github.blog/changelog/2026-06-25-assign-enterprise-teams-to-cost-centers/), [docs](https://docs.github.com/en/enterprise-cloud@latest/billing/tutorials/control-costs-at-scale))? Recommend that — the sync skips every mapping by default and defers to native assignment.
-- If native assignment is not usable, set `force_user_sync: true` on the mapping (or run the workflow with the `force_user_sync` input) to run the legacy user-level sync as a bridge.
-
-For each mapping:
-
-- Source type: org team (set `organization:`) or enterprise team (omit it).
-- Org login, if org team.
-- Enterprise slug, if enterprise team and different from top-level.
-- Bare team slug.
-- Destination cost center name (`cost_center:`).
-- Run the legacy user-level sync for this mapping (`force_user_sync: true`)? Default is to skip and defer to native assignment.
-- Should sync remove extra users not in the team (`remove_extra_members`)? Only applies when `force_user_sync` is true.
-  - `true`: strict reconciliation.
-  - `false` or omitted: additive only, preserves manual members.
-
-## Safety Questions
+## Safety questions
 
 Ask before writing or suggesting production config:
 
-- Should the config be written to a tracked file or an ignored `.local.yml` file?
-- Are enterprise/team/cost-center names safe to commit?
-- Should the workflow be run in dry-run first?
-
-Always recommend dry-run before live apply/sync.
+- Tracked file or ignored `.local.yml`?
+- Are the names/amounts safe to commit?
+- Recommend a dry-run before a live apply — always.

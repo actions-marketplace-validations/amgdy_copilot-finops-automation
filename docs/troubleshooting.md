@@ -2,110 +2,66 @@
 
 ## Config validation fails
 
-Run the validator directly so the error points at the config file before any API call happens:
+Run the validator directly so the error points at the config file before any API call happens (no token needed):
 
 ```bash
-# v2 merged file
-scripts/validate-config.sh config/copilot-finops.yml all
-# v1 split files
-scripts/validate-config.sh config/cost-center-members.yml teams
-scripts/validate-config.sh config/budget-policies.yml budgets
+node bin/copilot-finops.js validate config/copilot-finops.yml
 ```
 
-Common causes (v2 vocab; v1 equivalents in parentheses):
+Common causes:
 
-- The file is missing `version: 2` (v2), or a v1 split file is blank / missing its top-level list.
-- A `team` policy is missing its `teams` (v1 `source.team_slug`) or its `credit_scope` (v1 `coverage`); a `scope: organization` policy is missing `organization` or `credit_scope`.
-- `enterprise` and `organization` are set on the same entry (they are mutually exclusive).
-- `ai_credit_spend_policies` is non-empty but is missing its single required `all_users` policy, or defines more than one `all_users`, or more than one `enterprise` policy (enterprise is optional but capped at one).
-- `amount` (v1 `budget.amount`) is missing or is not a whole number.
-- A hard-stop-only budget is set to alert-only — `stop_at_limit: false` (v1 `prevent_further_usage: false`) on `all_users` (v1 `universal`) or per-member `pool_then_metered` (v1 `total_spend`) budgets.
-- A field is set that the chosen `scope` forbids (e.g. `cost_center` on a `pool_then_metered` team budget).
+- The file is missing `version: 3`.
+- A budget is missing the field its `scope` requires: `users` for `scope: user`, `cost_center` for `scope: cost_center`, `team` for `scope: team`, `organization` for `scope: organization`.
+- A budget sets a field its `scope` forbids (for example `users` on a `team` budget, or `cost_center` on an `all_users` budget).
+- `amount` is missing or is not a whole number.
+- `enforce` is set on a budget that is always hard-stop (`all_users`, `user`, or a default per-member `cost_center`/`team`/`organization`). `enforce` is only allowed on collective metered budgets — `scope: enterprise`, or `cost_center`/`team`/`organization` with `metered_credits_only: true`.
+- `allow_shared_cost_center` is set on a scope other than `team` or `organization`.
+- More than one `all_users` budget, more than one `enterprise` budget, more than one direct `organization` (metered-only) budget, or two budgets that resolve to the same cost center with the same `metered_credits_only` setting. These uniqueness rules are enforced by the semantic layer (`src/config/validate.js`).
 
-## Schema validation fails
+Schema-level errors (misspelled or wrongly nested keys) read like `must NOT have additional properties` or `must be equal to one of the allowed values`; the field reference is [docs/config-schema.md](config-schema.md).
 
-The validator checks each config against the JSON Schema under `schemas/v<N>/` before the semantic
-checks. Schema errors look like `Additional properties are not allowed ('...' was unexpected)` or
-`'...' is not one of [...]`.
+## `apply` says a cost center was not found
 
-- A field name is misspelled, or a field is nested at the wrong level (the schema rejects unknown keys).
-- A value has the wrong type or is outside its range (e.g. `amount` below 0; in a v1 file, `sync.batch_size` outside 1-50).
-- `version` points at a version with no `schemas/v<N>/` directory. Supported versions are listed in the error; use `version: 1` (or omit it) for v1, or `version: 2` for the merged file.
-- v2 only: the schema also rejects structural cross-field violations — `False schema does not allow ...` for a field that is not allowed for the chosen `scope`, or `should not be valid under ...` when `enterprise` and `organization` are both set.
-- The error mentions `check-jsonschema not found`: install it with `pipx install check-jsonschema` to run the schema layer locally (the workflows install it automatically).
-
-## You are not using cost-center sync
-
-Keep the config present with an empty list:
-
-```yaml
-version: 2
-enterprise_slug: your-enterprise
-team_cost_center_mappings: []
+```
+cost center "engineering" not found (create it in GitHub, or use scope: team to auto-provision one).
 ```
 
-The sync workflow will validate the file, print that no mappings were found, and exit without changes.
+`scope: cost_center` resolves an **existing** cost center by name. Either create that cost center in GitHub first, or use `scope: team`, which finds or **creates** the cost center and assigns the team to it automatically. (An `organization` budget is written directly and never needs a cost center.)
+
+## `apply` skipped a team budget as "shared"
+
+When the cost center that groups a team also holds other resources, budgeting it would affect more than the intended group, so the budget is skipped and the blast radius is reported. To budget it anyway, set `allow_shared_cost_center: true` on that budget.
+
+## API returns 403 or 429 (rate limited)
+
+The GitHub client retries rate-limited calls automatically, honoring `retry-after` / `x-ratelimit-reset` and otherwise backing off exponentially (capped), up to the `max-retries` input (default 10). If it still fails after the retries, re-run later or lower the number of budgets per run.
+
+For live diagnostics, re-run with `log_level=info` or `log_level=debug` in `finops-apply.yml`. `info` is the default and prints apply progress plus the plain-text report. `debug` also prints budget resolution, live-budget matching, create/patch payloads, request parameters with sensitive fields redacted, response status, retry waits, and pagination counts. The job summary always includes the full apply report even if live logging is lowered to `warn` or `error`.
+
+If you see FinOps lines prefixed with `[debug]`, the workflow input being passed to the action is `debug`. Set `log_level` to `info` or lower; GitHub's separate step-debug setting does not override the FinOps `log-level` input. `DEBUG` entries in the job summary's full run log follow the same setting.
 
 ## API returns 404
 
-For these scripts, a 404 usually means one of these things:
+For `apply`, a 404 usually means one of:
 
 - The enhanced billing API is not available for the enterprise.
-- The token does not have enterprise billing or enterprise team read access.
-- The enterprise slug, team slug, cost center name, or resolved cost center ID is wrong.
-- A cost center exists but is archived/deleted; the scripts intentionally skip deleted cost centers.
+- The token does not have `admin:enterprise` (or is not SSO-authorized).
+- The enterprise slug (the `enterprise` input / `COPILOT_FINOPS_ENTERPRISE` variable) is wrong.
 
-Check `docs/permissions.md`, then rerun in `dry_run=true` where possible.
-
-## Sync skipped: every mapping is skipped by default
-
-If a sync run logs `NOTE: Skipping user-level membership sync for mapping '...'` for each mapping and makes no changes, this is the **new default**. Enterprise teams can now be assigned to cost centers natively ([changelog](https://github.blog/changelog/2026-06-25-assign-enterprise-teams-to-cost-centers/), [docs](https://docs.github.com/en/enterprise-cloud@latest/billing/tutorials/control-costs-at-scale)), so the sync defers to native assignment instead of writing individual user resources. Either:
-
-- Assign the team to the cost center natively in **Enterprise → Settings → Billing → Cost centers** (recommended), or
-- Set `force_user_sync: true` on the mapping (or run the workflow with the `force_user_sync` input / pass `--force-user-sync true`) to run the legacy user-level sync as a bridge.
-
-The audit workflow flags a mapping that is neither assigned natively nor forced as **membership unmanaged**, so check the audit summary if you expected member changes. If your live sync uses the global `force_user_sync` workflow input (for example with frozen v1 config), run audit with `force_user_sync` too so the report reflects that global opt-in.
-
-## Sync skipped: team is assigned natively
-
-If a forced sync run logs `NOTE: Cost center '...' already has enterprise team '...' assigned natively` and skips a mapping, this is expected. The cost center already has that enterprise team assigned as a native resource ([changelog](https://github.blog/changelog/2026-06-25-assign-enterprise-teams-to-cost-centers/)), so GitHub keeps its membership current automatically and the user-level sync would only re-add the same members as redundant direct resources. Either:
-
-- Remove the `team_cost_center_mappings` entry (or set `force_user_sync: false`) and rely on the native assignment (recommended), or
-- Remove the native team assignment from the cost center if you specifically want script-managed user resources.
-
-A `WARN` about a *different* natively-assigned team means the cost center mixes native team assignment with user-level sync; pick one approach per cost center.
-
-## Team member counts are zero
-
-- Use bare team slugs, for example `teams: [ai-leads]` (budgets) or `team: ai-leads` (mappings).
-- Org teams need `organization:` set; enterprise teams omit it (the enterprise is inferred).
-- Enterprise team reads need `read:enterprise` or equivalent enterprise teams read permission.
-- Org team reads usually need `read:org`.
+Check [docs/permissions.md](permissions.md), then re-run in dry-run where possible.
 
 ## Budgets are not deleted
 
-This is expected. The apply script creates missing budgets and updates changed budgets, but it never deletes budgets that were removed from config. Delete old budgets manually after review.
+This is expected. `apply` creates missing budgets and updates changed ones, but it **never deletes** budgets that were removed from config. Delete old budgets manually after review:
 
-## Issue-based config test fails
-
-- Make sure the issue was created with the `Copilot FinOps config request` issue form and is run through the `Apply Copilot FinOps` workflow's `issue_number` input.
-- Make sure the issue is open and has the `copilot-finops-config` label.
-- Make sure the `Copilot FinOps config YAML` field contains a complete fenced YAML config.
-- The pasted YAML must be a complete v2 document: `version: 2`, plus `enterprise_slug` unless you pass it another way. Populate `ai_credit_spend_policies` and/or `team_cost_center_mappings` (a list you omit is a no-op for that half of the run).
-- Reviewed file-based config is the recommended production path, even though the workflow can use issue-based config as a source.
-- Do not assign these issues to Copilot or other coding agents. They are workflow input records, not implementation tasks.
-
-## Cost center budget does not affect expected users
-
-Cost center budgets only apply to users who are members of that cost center. For `team` policies that cap metered usage only (`credit_scope: metered_only` in v2, `coverage: additional_spend` in v1), the apply script adds current team members to the cost center. Ongoing removals are handled by `sync-cost-center-members.yml` when you configure a mapping with `remove_extra_members: true`.
-
-## Local scripts fail on macOS
-
-The GitHub-hosted `ubuntu-24.04` runner already includes Bash 5.2, GitHub CLI, `jq`, and `yq`. If local scripts fail on macOS, install current local versions:
-
-```bash
-brew install gh jq yq bash
-export PATH="/opt/homebrew/bin:$PATH"
+```text
+DELETE /enterprises/{enterprise}/settings/billing/budgets/{budget_id}
 ```
 
-Then rerun validation from the repository root.
+## A budget appears to be created twice / conflicts
+
+GitHub allows only one budget per entity. If two config budgets resolve to the same natural key (for example two budgets on the same cost center), the semantic validator flags it before apply. Fix the config so each entity is budgeted once.
+
+## Nothing changed but I expected a change
+
+`apply` is idempotent: it reports `NO CHANGE` when the live budget already matches config (amount, hard-stop, and alert recipients). Change the config value to see an `UPDATE`. The dry-run preview shows exactly what a live run would do.

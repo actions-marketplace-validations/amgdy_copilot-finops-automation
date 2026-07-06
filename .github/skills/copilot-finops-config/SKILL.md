@@ -1,137 +1,100 @@
 ---
 name: copilot-finops-config
-description: "Use when: creating, updating, reviewing, or validating Copilot FinOps config for copilot-finops.yml (v2 merged config), budget-policies.yml, cost-center-members.yml, Copilot FinOps config-request issue YAML, all-users budgets, enterprise caps, cost center budgets, team budgets, organization budgets, AI credits, and GitHub Copilot cost center sync."
-argument-hint: "Describe budgets, teams, cost centers, target file path, and whether this is local/private, issue YAML, or repo config."
+description: "Use when: creating, updating, reviewing, or validating Copilot FinOps config for config/copilot-finops.yml (v3, budgets-first), AI-credit budgets, all-users budgets, per-user budgets, cost center budgets, team budgets, organization budgets, and enterprise caps for GitHub Copilot."
+argument-hint: "Describe the budgets you want (scope, amount, teams/orgs/cost centers/users), the target file path, and whether it is tracked or a private .local.yml."
 ---
 
 # Copilot FinOps Config
 
 Use this skill to help users create valid Copilot FinOps configuration for this repository.
 
-There are two config contracts. Prefer **v2** for new config.
+There is one config contract: **v3**, a single **budgets-first** file.
 
-- **v2 (recommended):** one merged file, `config/copilot-finops.yml`, declaring `version: 2`.
-  `ai_credit_spend_policies` and `team_cost_center_mappings` are both optional — include only what
-  you need. Validated with type `all`.
-- **v1 (frozen, still supported):** the split files `config/budget-policies.yml` and
-  `config/cost-center-members.yml`. Do not mix v1 and v2 vocabulary in one file.
+- Tracked config: `config/copilot-finops.yml`, declaring `version: 3`.
+- Private/local config: `config/copilot-finops.local.yml` (gitignored).
+- The file holds one optional `budgets:` list. Omit it (or use `[]`) for a valid no-op.
 
-The primary outputs are:
+v3 manages **AI-credit budgets only**. It does **not** do per-member cost-center sync, and there is
+no issue-based config form — both were removed with the legacy Bash implementation.
 
-- `config/copilot-finops.yml` (v2 merged) and its ignored local form `config/copilot-finops.local.yml`
-- the v1 split files when editing existing v1 config
-- issue-form YAML blocks for config request issues
+## No enterprise field
 
-## v1 → v2 Vocabulary
+There is **no** `enterprise` / `enterprise_slug` field in v3. The enterprise slug is supplied to the
+action/CLI as the `enterprise` input (from the `COPILOT_FINOPS_ENTERPRISE` variable), so real slugs
+never live in tracked config. Never add an enterprise field to generated config.
 
-| v1 | v2 |
-| --- | --- |
-| `budget_policies:` (list) | `ai_credit_spend_policies:` (optional) |
-| `type` | `scope` |
-| `type: universal` | `scope: all_users` |
-| `coverage: total_spend` / `additional_spend` | `credit_scope: pool_then_metered` / `metered_only` |
-| `source: {enterprise, team_slug}` | `teams:` (budgets) / `team:` (mappings); enterprise inferred |
-| `source: {org, team_slug}` | `organization:` + `teams:` (budgets) / `team:` (mappings) |
-| `target.cost_center` | `cost_center:` |
-| `budget.amount` | `amount` |
-| `budget.prevent_further_usage` | `stop_at_limit` |
-| `budget.alerting.{will_alert, alert_recipients}` | `alert_admins` (non-empty enables alerting) |
-| `sync.remove_extra_members` | `remove_extra_members` |
-| `budget-policies.yml` + `cost-center-members.yml` | `config/copilot-finops.yml` |
+## Source of truth for structure
 
-In v2, `enterprise:` and `organization:` are mutually exclusive on one entry. On `scope: team`,
-`organization:` marks an org team membership source; on `scope: organization` it names the org the
-budget belongs to (and routes the budget to the org billing endpoint). `scope: organization` is
-dual-track like team: `credit_scope: pool_then_metered` gives every org member an individual user budget,
-`credit_scope: metered_only` is one org-scope budget.
+The authoritative shape — every field, every enum value, and which fields are required or forbidden
+per `scope` — lives in three files, not in this skill:
 
-## Conflicts (no duplicate budgets)
-
-GitHub Enterprise does not allow two budgets for the same entity. If the same login would receive an
-individual user budget from two or more policies (any mix of `scope: user` / `team` / `organization`
-`pool_then_metered`), the apply engine flags a conflict, keeps only the **last** such policy in the file (last wins), skips
-the earlier ones, and lists every collision in the run summary. When advising users, order policies
-so the intended winner is last, or avoid overlapping membership.
-
-## Source of Truth for Structure
-
-The authoritative shape of a config — every field, every enum value, and which fields are required
-or forbidden for each `scope` — lives in two files, not in this skill:
-
-- **Schema:** `schemas/v2/copilot-finops.schema.json` (v2) / `schemas/v1/*.schema.json` (v1).
-- **Worked example:** `config/copilot-finops.example.yml` (covers every scope, org/enterprise teams,
-  both mapping modes).
+- **Schema:** `schemas/v3/copilot-finops.schema.json`.
+- **Generated field reference:** `docs/config-schema.md`.
+- **Worked example:** `config/copilot-finops.example.yml` (covers every scope).
 
 The reference files below give idiomatic examples and the judgment the schema cannot express (which
-scope to pick, strict vs additive sync, what to ask). When the schema/example and any prose disagree,
-the schema and example win — author config to pass the schema, then confirm with the validator
-(see `./references/validation.md`). Do not invent fields or relax a per-scope rule from memory.
+scope to pick, what to ask). When prose disagrees with the schema/example, the schema and example
+win. Do not invent fields or relax a per-scope rule from memory — author config to pass the schema,
+then confirm with the validator (see `./references/validation.md`).
 
-## Core Rules
+## The budget fields
 
-1. Ask clarifying questions before creating config unless the user already gave all required values.
-2. Prefer config-as-code in reviewed files for production changes.
-3. Use `.local.yml` files for private/local config that should not be committed.
-4. Use issue-form YAML only for request/test scenarios or when the user explicitly asks for issue-based config.
-5. Use AI-credit terminology only. Do not use deprecated request-based billing terms.
-6. Do not include product SKU or budget type fields. v2 has no such surface; scripts default to `ai_credits` (BundlePricing).
-7. Do not include `api:` endpoint template overrides in generated config.
-8. Keep always-hard-stop budgets hard-stop: omit `stop_at_limit` or set it `true` for `scope: all_users`, `scope: user`, and for `scope: team`/`organization` + `credit_scope: pool_then_metered`.
-9. Use `remove_extra_members` only on a `scope: team` + `credit_scope: metered_only` budget, or on a `team_cost_center_mappings` entry.
-10. For v2, every file must set `version: 2`; `ai_credit_spend_policies` and `team_cost_center_mappings` are both optional (include only what you need).
-11. When `ai_credit_spend_policies` is non-empty, include exactly one `scope: all_users` policy (required); a `scope: enterprise` policy is optional but limited to one. An empty/omitted list stays a valid no-op.
-12. Validate generated files with `scripts/validate-config.sh`: v2 uses type `all`; v1 uses `budgets` / `teams`. It checks the versioned JSON Schema (`schemas/v2/` or `schemas/v1/`) then the semantic cross-field rules.
-13. Only use a config version that has a matching `schemas/v<N>/` directory.
-14. When repository requirements change, keep this skill and `AGENTS.md` in sync.
-15. Prefer native enterprise-team assignment for cost-center membership. GitHub supports adding an enterprise team directly as a cost center resource ([changelog](https://github.blog/changelog/2026-06-25-assign-enterprise-teams-to-cost-centers/), [docs](https://docs.github.com/en/enterprise-cloud@latest/billing/tutorials/control-costs-at-scale)), which keeps membership current automatically (incl. SCIM/IdP). The sync now **skips every `team_cost_center_mappings` entry by default** and defers to native assignment; the legacy user-level sync runs only when a mapping sets `force_user_sync: true` (or the run passes `--force-user-sync true` / the `force_user_sync` workflow input). Recommend native assignment first; use `force_user_sync` only as a bridge when native assignment is not usable, and never force a mapping at a cost center that already has that team assigned natively (a forced run still skips it). The audit workflow has a matching `force_user_sync` input for accurate reporting of globally-forced sync runs, including frozen v1 configs. The v2 schema marks `team_cost_center_mappings` `deprecated: true` (soft annotation — still validates and runs). See `./references/cost-center-members.md`.
+Each entry in `budgets:` is one budget:
+
+| Field | Notes |
+| --- | --- |
+| `scope` | **Required.** One of `all_users`, `user`, `cost_center`, `team`, `organization`, `enterprise`. |
+| `amount` | **Required.** Whole USD (integer ≥ 0). |
+| `name` | Optional local label (logs/report only; never sent to GitHub). |
+| `description` | Optional human-readable note. |
+| `metered_credits_only` | Boolean, default `false`. On `cost_center`/`team`: `true` = collective metered cap, `false` = per-user pool+metered cap. On `organization`: use `true` (or omit it); `false` (a per-member org budget) is **not yet supported**. |
+| `enforce` | Boolean, default `true`. **Only** on collective metered budgets (`enterprise` or `organization`, or `cost_center`/`team` with `metered_credits_only: true`). `false` = alert-only. Forbidden elsewhere (pool/per-user budgets always hard-stop). |
+| `users` | **Required for `scope: user`**, forbidden elsewhere. Non-empty list of logins; each gets its own hard-stop budget. |
+| `cost_center` | **Required for `scope: cost_center`**, forbidden elsewhere. Name of an existing cost center. |
+| `team` | **Required for `scope: team`**, forbidden elsewhere. Prefer the bare enterprise team slug (no `ent:` prefix); apply also resolves display names and `ent:<slug>` to the canonical slug. |
+| `organization` | **Required for `scope: organization`**, forbidden elsewhere. Org login. The budget is a direct collective metered cap (no cost center); use `metered_credits_only: true` (or omit it) — `false` (per-member) is not yet supported. |
+| `alerts` | Optional list of logins to notify. A non-empty list enables alerting. |
+| `allow_shared_cost_center` | Boolean, default `false`. **Only** on `team`. `true` budgets a cost center even if it holds other resources. |
+
+## What each scope does
+
+- `all_users` — per-user cap for every licensed user (pool + metered, always hard-stop).
+- `user` — per-user cap for each login in `users` (pool + metered, always hard-stop; overrides the universal and cost-center per-user budgets).
+- `cost_center` — default: per-member pool+metered cap for a **named existing** cost center; `metered_credits_only: true`: the cost center's collective metered cap.
+- `team` — applied through the enterprise team's cost center (found, or **created** and the team assigned). Default: per-member cap; `metered_credits_only: true`: the cost center's collective metered cap.
+- `organization` — a **direct** cap on the org's collective metered spend after the pool (no cost center); use `metered_credits_only: true` (or omit it). The per-member org path (`metered_credits_only: false`) is **not yet supported** — to cap specific org users per-member, put them in an enterprise team and budget it with `scope: team`.
+- `enterprise` — one enterprise-wide collective metered cap after the pool.
+
+## Core rules
+
+1. Ask clarifying questions before creating config unless the user already gave all required values (see `./references/interview.md`).
+2. Prefer config-as-code in reviewed files for production; use `config/copilot-finops.local.yml` for private/local config.
+3. Every file sets `version: 3`. `budgets` is optional (omit for a no-op).
+4. Never add an enterprise/`enterprise_slug` field — the slug is an action input.
+5. Use AI-credit terminology only. Never use deprecated request-based billing terms.
+6. Never add a product SKU or budget type — the engine defaults to `ai_credits`.
+7. Set `enforce` **only** on collective metered budgets (`enterprise` or `organization`, or `cost_center`/`team` with `metered_credits_only: true`). Omit it on `all_users`, `user`, and default (per-member) `cost_center`/`team` — they always hard-stop.
+8. Set `metered_credits_only` on `cost_center`, `team`, or `organization`. On `organization` use `true` (or omit it); `metered_credits_only: false` (a per-member org budget) is **not yet supported**.
+9. Set `allow_shared_cost_center` only on `team`.
+10. Uniqueness: at most one `all_users`, at most one `enterprise`, at most one `organization` budget per org, and at most one budget per (`cost_center` + `metered_credits_only` setting). `all_users` is optional, not required.
+11. `scope: cost_center` needs an **existing** cost center. If the user wants one auto-created, use `scope: team` instead. A `scope: organization` budget is written directly (no cost center).
+12. Validate generated files with `node bin/copilot-finops.js validate <file>` (see `./references/validation.md`).
+13. When repository requirements change, keep this skill and `AGENTS.md` in sync.
 
 ## Workflow
 
-1. Determine the target output:
-   - budget policies config
-   - cost center members sync config
-   - both configs
-   - issue-form YAML block
-2. Ask the necessary questions from `./references/interview.md`.
-3. Choose the right patterns:
-   - `./references/budget-policies.md`
-   - `./references/cost-center-members.md`
-   - `./references/issue-config.md`
-4. Generate minimal YAML that only includes needed fields, grounded in the schema and `config/copilot-finops.example.yml` (see Source of Truth above).
-5. Validate with `./references/validation.md`.
-6. Explain how to run the relevant workflow or script.
+1. Ask the necessary questions from `./references/interview.md`.
+2. Choose the right patterns:
+   - `./references/budgets.md` — every budget scope, with examples.
+   - `./references/cost-centers.md` — how `team` budgets resolve or create cost centers, and the shared-cost-center safety.
+3. Generate minimal YAML with only the needed fields, grounded in the schema and `config/copilot-finops.example.yml`.
+4. Validate with `./references/validation.md`.
+5. Explain how to run `finops-apply.yml` (dry-run first) or the CLI. Mention `log_level=debug` only when the operator needs detailed live diagnostics.
 
-## Output Guidance
+## Output guidance
 
-When writing files:
-
-- Prefer the v2 merged file `config/copilot-finops.yml` (and `config/copilot-finops.local.yml` for private local config).
-- When editing existing v1 config, use `config/budget-policies.yml` and `config/cost-center-members.yml` (and their `.local.yml` forms).
-- Keep public starter configs generic: `your-enterprise`, `your-org`, `platform-engineering`.
-
-When returning YAML for an issue form:
-
-- There is one issue form, `Copilot FinOps config request` (label `copilot-finops-config`), consumed only by the unified `apply-copilot-finops.yml` workflow. Return a complete v2 document the user can paste into its `Copilot FinOps config YAML` field: set `version: 2` and populate whichever of `ai_credit_spend_policies` / `team_cost_center_mappings` the run should act on (the other may be omitted — the matching half is simply a no-op).
-- Remind the user that issue-based config is visible to anyone with read access to the repository, the same as config files, so the enterprise, organization, team, cost center, user, and budget data in it is not private.
-- Remind the user not to assign the issue to Copilot or other coding agents; it is structured workflow input, not an implementation task.
-
-## Validation Commands
-
-`scripts/validate-config.sh` first validates structure, types, enums, and the structural cross-field
-rules against the versioned JSON Schema (using `check-jsonschema` when installed), then applies the
-semantic re-checks. Install the validator with `pipx install check-jsonschema` for the full check
-locally; the workflows install it automatically.
-
-v2 (merged file, type `all`):
-
-```bash
-scripts/validate-config.sh config/copilot-finops.yml all
-scripts/validate-config.sh config/copilot-finops.local.yml all
-```
-
-v1 (frozen split files):
-
-```bash
-scripts/validate-config.sh config/budget-policies.yml budgets
-scripts/validate-config.sh config/cost-center-members.yml teams
-```
+- Write to `config/copilot-finops.yml` (tracked) or `config/copilot-finops.local.yml` (private local).
+- Keep public starter configs generic: `acme` (org), `platform-engineering` (team), `octocat` (login).
+- Never include a real enterprise slug (there is no field for it), real user logins, cost center names, or budget amounts in tracked config unless the user has approved them for disclosure.
+- Always recommend a dry-run (`finops-apply.yml` with `dry_run=true`, or `node bin/copilot-finops.js apply … --enterprise <slug>` without `--live`) before a live apply.
+- Workflow live logging defaults to `log_level=info`, which streams apply progress plus the plain-text report. Use `warn` for quieter routine runs, or `debug` for budget-resolution, matching, payload, request, retry, and pagination diagnostics. The job summary still contains the full report; `DEBUG` entries in its full run log appear only at `log_level=debug`.

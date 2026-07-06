@@ -1,0 +1,435 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/copilot-finops-automation/schemas/v3/copilot-finops.schema.json",
+  "title": "Copilot FinOps config (v3)",
+  "description": "Schema for config/copilot-finops*.yml (version 3). v3 is budgets-first: it manages GitHub Copilot AI-credit budgets and drops the v2 ongoing per-member cost-center sync (there is no team_cost_center_mappings block). A budget's `scope` selects who it is for; `metered_credits_only` (boolean, default false) picks whether it caps the shared-pool + metered phase per user (the default) or only metered spend after the pool. There is NO `enterprise` field here — the enterprise slug is supplied only via the action's `enterprise` input, so real slugs never live in tracked config. This schema encodes shape, types, enums, typo protection (additionalProperties:false) and the per-scope required/forbidden field structure (including the metered_credits_only -> enforce gating). It targets JSON Schema draft 2020-12. Cardinality and uniqueness (at most one all_users / enterprise / organization budget, one budget per resolved cost center + metered_credits_only), plus every live lookup (cost center resolution, team membership) and value defaulting, stay in the semantic layer (src/config/validate.js) and the apply engine, not here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version"
+  ],
+  "examples": [
+    {
+      "version": 3
+    },
+    {
+      "version": 3,
+      "budgets": [
+        {
+          "name": "all-users-default",
+          "scope": "all_users",
+          "amount": 30
+        },
+        {
+          "name": "engineering-metered-cap",
+          "scope": "cost_center",
+          "cost_center": "engineering",
+          "metered_credits_only": true,
+          "amount": 500,
+          "enforce": false,
+          "alerts": [
+            "eng-billing-admin"
+          ]
+        }
+      ]
+    }
+  ],
+  "properties": {
+    "version": {
+      "title": "Config version",
+      "description": "Config contract version. Must be 3.",
+      "const": 3
+    },
+    "budgets": {
+      "title": "Budgets",
+      "description": "List of AI-credit budgets to apply. Optional — omit it (or use []) for a no-op config. Each entry maps to exactly one GitHub budget API call (some via a resolved cost center).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/budget"
+      }
+    }
+  },
+  "$defs": {
+    "budget": {
+      "title": "Budget",
+      "description": "One AI-credit budget. `scope` is the primary selector; it controls which identity fields are required or forbidden, and (with metered_credits_only) whether `enforce` is allowed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "amount"
+      ],
+      "properties": {
+        "name": {
+          "title": "Budget name",
+          "description": "Local label used in logs and the apply report. Never sent to the GitHub API (budgets have no name field).",
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "all-users-default",
+            "platform-team-per-user",
+            "enterprise-cap"
+          ]
+        },
+        "description": {
+          "title": "Description",
+          "description": "Optional human-readable description of what the budget is for.",
+          "type": "string",
+          "examples": [
+            "Default per-user AI-credit budget for every licensed user."
+          ]
+        },
+        "scope": {
+          "title": "Budget scope",
+          "description": "Who the budget is for. Maps (with metered_credits_only) to one of GitHub's official budget controls.",
+          "oneOf": [
+            {
+              "const": "all_users",
+              "title": "All users",
+              "description": "Universal per-user budget for every licensed user (API multi_user_customer). Covers pool + metered; always hard-stop."
+            },
+            {
+              "const": "user",
+              "title": "User",
+              "description": "Individual per-user budget for each login in `users` (API user). Covers pool + metered; always hard-stop; overrides the universal and cost-center user-level budgets."
+            },
+            {
+              "const": "cost_center",
+              "title": "Cost center",
+              "description": "Budget for a named cost center (`cost_center`). Default (metered_credits_only:false) = per-user pool+metered cap for every member (API multi_user_cost_center, hard-stop). metered_credits_only:true = collective metered cap for the cost center (API cost_center)."
+            },
+            {
+              "const": "team",
+              "title": "Team",
+              "description": "Budget for an enterprise team (`team`), applied through the cost center that contains it (found, or created and the team assigned). Default = per-member pool+metered cap (multi_user_cost_center); metered_credits_only:true = the cost center's collective metered cap."
+            },
+            {
+              "const": "organization",
+              "title": "Organization",
+              "description": "Budget for an organization (`organization`) — a direct cap on the org's collective metered spend after the shared pool (API organization). Use metered_credits_only: true (or omit it); the per-member path (metered_credits_only: false, a per-user ULB) is not yet supported — use all_users or scope: user for per-user coverage. Optional hard-stop via `enforce`."
+            },
+            {
+              "const": "enterprise",
+              "title": "Enterprise",
+              "description": "One enterprise-wide budget capping collective metered spend after the shared pool (API enterprise). Optional hard-stop via `enforce`."
+            }
+          ]
+        },
+        "amount": {
+          "title": "Amount",
+          "description": "Budget cap in whole USD. Maps to budget_amount.",
+          "type": "integer",
+          "minimum": 0,
+          "examples": [
+            30,
+            75,
+            500,
+            5000
+          ]
+        },
+        "metered_credits_only": {
+          "title": "Metered credits only",
+          "description": "false (default) caps the whole shared-pool + metered phase per user (a per-user hard-stop for the group); true caps only metered/additional spend after the pool (collective). Settable on cost_center and team, and on organization (where metered_credits_only: false — a per-member org budget — is currently gated as 'not yet supported' by the validator); fixed elsewhere (all_users/user always false; enterprise always metered) and forbidden there.",
+          "type": "boolean",
+          "default": false
+        },
+        "users": {
+          "title": "Users",
+          "description": "GitHub logins to budget; each login gets its own hard-stop user budget. Required (one or more) for scope: user; forbidden on every other scope.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [
+            [
+              "octocat"
+            ],
+            [
+              "alice",
+              "bob"
+            ]
+          ]
+        },
+        "cost_center": {
+          "title": "Cost center",
+          "description": "Cost center name (resolved to its ID at apply time). Required for scope: cost_center; forbidden on every other scope.",
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "engineering",
+            "platform"
+          ]
+        },
+        "team": {
+          "title": "Team",
+          "description": "Enterprise team identifier. Prefer the bare slug (no ent: prefix), but apply also resolves the API slug (ent:<slug>) or display name to the canonical bare slug before assigning the team to a cost center. Required for scope: team; forbidden on every other scope. Resolved to the cost center that contains the team, or a cost center is created and the team assigned to it.",
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "platform-engineering",
+            "ai-leads"
+          ]
+        },
+        "organization": {
+          "title": "Organization",
+          "description": "Organization login. Required for scope: organization; forbidden on every other scope. The budget is a direct collective metered cap for the org (no cost center, no member enumeration).",
+          "type": "string",
+          "minLength": 1,
+          "examples": [
+            "acme",
+            "your-org"
+          ]
+        },
+        "enforce": {
+          "title": "Enforce (hard stop)",
+          "description": "Hard-stop usage at the cap (maps to prevent_further_usage). Allowed only on collective metered budgets (scope: enterprise or organization, or scope: cost_center/team with metered_credits_only: true); default true. Pool/per-user budgets are always hard-stop and forbid this field.",
+          "type": "boolean",
+          "default": true
+        },
+        "alerts": {
+          "title": "Alerts",
+          "description": "GitHub logins to alert when the budget is hit. Optional; defaults to []. A non-empty list enables alerting.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "examples": [
+            [
+              "billing-admin"
+            ],
+            [
+              "eng-billing-admin",
+              "finops-lead"
+            ]
+          ]
+        },
+        "allow_shared_cost_center": {
+          "title": "Allow shared cost center",
+          "description": "Opt in to budgeting a cost center that already holds resources beyond the target team. Only valid on scope: team. Default false: if the resolved cost center is shared, the budget is skipped and the blast radius is reported. When true, the whole cost center is budgeted.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "scope: all_users — no identity fields; metered_credits_only, enforce, allow_shared_cost_center forbidden (always per-user hard-stop).",
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "const": "all_users"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "users": false,
+              "cost_center": false,
+              "team": false,
+              "organization": false,
+              "metered_credits_only": false,
+              "enforce": false,
+              "allow_shared_cost_center": false
+            }
+          }
+        },
+        {
+          "$comment": "scope: user — requires users; forbids other identity fields and metered_credits_only/enforce/allow_shared_cost_center (always per-user hard-stop).",
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "const": "user"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "users"
+            ],
+            "properties": {
+              "cost_center": false,
+              "team": false,
+              "organization": false,
+              "metered_credits_only": false,
+              "enforce": false,
+              "allow_shared_cost_center": false
+            }
+          }
+        },
+        {
+          "$comment": "scope: enterprise — no identity fields, no metered_credits_only (fixed true), no allow_shared_cost_center. enforce is allowed (collective metered).",
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "const": "enterprise"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "users": false,
+              "cost_center": false,
+              "team": false,
+              "organization": false,
+              "metered_credits_only": false,
+              "allow_shared_cost_center": false
+            }
+          }
+        },
+        {
+          "$comment": "scope: cost_center — requires cost_center; forbids users/team/organization and allow_shared_cost_center (the cost center is named explicitly).",
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "const": "cost_center"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "cost_center"
+            ],
+            "properties": {
+              "users": false,
+              "team": false,
+              "organization": false,
+              "allow_shared_cost_center": false
+            }
+          }
+        },
+        {
+          "$comment": "scope: team — requires team; forbids users/cost_center/organization.",
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "const": "team"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "team"
+            ],
+            "properties": {
+              "users": false,
+              "cost_center": false,
+              "organization": false
+            }
+          }
+        },
+        {
+          "$comment": "scope: organization — requires organization; forbids users/cost_center/team and allow_shared_cost_center (no cost center). metered_credits_only is a plain boolean here (shape only); the per-member/per-user org path (metered_credits_only: false) is gated as 'not yet supported' by the semantic validator, not the schema. enforce is allowed.",
+          "if": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "scope": {
+                "const": "organization"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "organization"
+            ],
+            "properties": {
+              "users": false,
+              "cost_center": false,
+              "team": false,
+              "allow_shared_cost_center": false
+            }
+          }
+        },
+        {
+          "$comment": "enforce gating for cost_center: forbidden unless metered_credits_only is true (the pool/per-user path is always hard-stop).",
+          "if": {
+            "allOf": [
+              {
+                "required": [
+                  "scope"
+                ],
+                "properties": {
+                  "scope": {
+                    "const": "cost_center"
+                  }
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "metered_credits_only"
+                  ],
+                  "properties": {
+                    "metered_credits_only": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "enforce": false
+            }
+          }
+        },
+        {
+          "$comment": "enforce gating for team: forbidden unless metered_credits_only is true.",
+          "if": {
+            "allOf": [
+              {
+                "required": [
+                  "scope"
+                ],
+                "properties": {
+                  "scope": {
+                    "const": "team"
+                  }
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "metered_credits_only"
+                  ],
+                  "properties": {
+                    "metered_credits_only": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "enforce": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

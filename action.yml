@@ -1,0 +1,46 @@
+name: Copilot FinOps
+description: Apply GitHub Copilot AI-credit budgets from a versioned v3 config file.
+author: amgdy
+branding:
+  icon: dollar-sign
+  color: purple
+
+inputs:
+  operation:
+    description: "What to do: 'apply' (apply desired budget state; dry-run previews the drift/audit) or 'validate' (config lint only, no token or API)."
+    required: false
+    default: apply
+  config-file:
+    description: Path to the v3 config file.
+    required: false
+    default: config/copilot-finops.yml
+  dry-run:
+    description: "apply only: preview changes and report the drift without writing. Ignored by validate. Default true."
+    required: false
+    default: "true"
+  enterprise:
+    description: "Target enterprise slug. Required for apply; ignored by validate. Supply from a repo/org Variable, not a secret. Not a config field."
+    required: false
+    default: ""
+  token:
+    description: "GitHub token. apply needs admin:enterprise; validate needs none."
+    required: false
+    default: ${{ github.token }}
+  max-retries:
+    description: "Max retries when a GitHub API call is rate-limited (honors retry-after, else exponential backoff). apply only. Default 10."
+    required: false
+    default: "10"
+  log-level:
+    description: "Live step log level: off, error, warn, info, or debug. info prints apply progress and the plain-text report; debug adds resolution, matching, payload, request, retry, and pagination detail with sensitive fields redacted. Default info; the job summary still contains the full apply report."
+    required: false
+    default: info
+
+outputs:
+  changed:
+    description: "true when at least one budget was (or, in dry-run, would be) created or updated."
+  summary-path:
+    description: Path to the rendered markdown report.
+
+runs:
+  using: node24
+  main: dist/index.js
